@@ -1,0 +1,358 @@
+import logging
+from contextlib import asynccontextmanager
+from urllib.parse import quote
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+
+from app.auth_schemas import (
+    AuthTokenResponse,
+    LoginRequest,
+    MessageResponse,
+    RegisterRequest,
+    ResendVerificationRequest,
+    UserResponse,
+)
+from app.config import get_auth_settings
+from app.conversation_schemas import ChatResponse as ConversationChatResponse
+from app.conversation_schemas import (
+    ConversationResponse,
+)
+from app.conversation_schemas import MessageResponse as ConversationMessageResponse
+from app.conversation_schemas import (
+    SendMessageRequest,
+)
+from app.database import (
+    create_conversation,
+    get_conversation_for_user,
+    get_conversation_messages,
+    init_db,
+    list_conversations,
+    list_episodic_memories,
+)
+from app.episode_schemas import EpisodicMemoryResponse
+from app.security import get_current_user
+from app.services.auth_service import (
+    authenticate_user,
+    create_access_token,
+    create_verification_token,
+    get_user_by_email,
+    register_user,
+    verify_email_token,
+)
+from app.services.chat_service import run_conversation_chat
+from app.services.email_service import send_verification_email
+from app.services.episode_service import summarize_conversation
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(
+    title="AI Knowledge Assistant",
+    description="Authenticated AI chatbot built with LangChain.",
+    version="0.2.0",
+    lifespan=lifespan,
+)
+
+
+def send_verification_link(email: str, token: str) -> None:
+    settings = get_auth_settings()
+    verification_url = (
+        f"{settings['app_base_url']}/auth/verify-email"
+        f"?token={quote(token, safe='')}"
+    )
+
+    send_verification_email(email, verification_url)
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
+@app.post(
+    "/auth/register",
+    response_model=MessageResponse,
+    status_code=201,
+    tags=["Authentication"],
+)
+def register(request: RegisterRequest):
+    try:
+        _, token = register_user(
+            name=request.name,
+            email=str(request.email),
+            password=request.password,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    try:
+        send_verification_link(str(request.email), token)
+    except Exception as exc:
+        logger.exception("Could not send verification email")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Your account was created but the verification email "
+                "could not be sent. Please try the resend endpoint."
+            ),
+        ) from exc
+
+    return MessageResponse(
+        message="Account created. Check your email to verify your address."
+    )
+
+
+@app.get(
+    "/auth/verify-email",
+    response_class=HTMLResponse,
+    tags=["Authentication"],
+)
+def verify_email(token: str):
+    if not token or len(token) > 200:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid verification link.",
+        )
+
+    if not verify_email_token(token):
+        raise HTTPException(
+            status_code=400,
+            detail="The verification link is invalid or has expired.",
+        )
+
+    return HTMLResponse("""
+        <!doctype html>
+        <html>
+          <head><title>Email verified</title></head>
+          <body>
+            <h1>Email verified successfully!</h1>
+            <p>You can now return to the application and log in.</p>
+          </body>
+        </html>
+        """)
+
+
+@app.post(
+    "/auth/resend-verification",
+    response_model=MessageResponse,
+    tags=["Authentication"],
+)
+def resend_verification(request: ResendVerificationRequest):
+    user = get_user_by_email(str(request.email))
+
+    # Avoid revealing whether an email belongs to an account.
+    if user is None or user["is_email_verified"]:
+        return MessageResponse(
+            message=(
+                "If an unverified account exists for this email, "
+                "a verification email will be sent."
+            )
+        )
+
+    token = create_verification_token(user["id"])
+
+    try:
+        send_verification_link(user["email"], token)
+    except Exception as exc:
+        logger.exception("Could not resend verification email")
+        raise HTTPException(
+            status_code=503,
+            detail="The verification email could not be sent. Try again later.",
+        ) from exc
+
+    return MessageResponse(
+        message=(
+            "If an unverified account exists for this email, "
+            "a verification email will be sent."
+        )
+    )
+
+
+@app.post("/auth/login", response_model=AuthTokenResponse, tags=["Authentication"])
+def login(request: LoginRequest):
+    user, error = authenticate_user(
+        email=str(request.email),
+        password=request.password,
+    )
+
+    if error == "email_not_verified":
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email before logging in.",
+        )
+
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token, expires_in = create_access_token(user["id"])
+
+    return AuthTokenResponse(
+        access_token=access_token,
+        expires_in=expires_in,
+    )
+
+
+@app.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
+def get_me(current_user=Depends(get_current_user)):
+    return UserResponse(
+        id=current_user["id"],
+        name=current_user["name"],
+        email=current_user["email"],
+        is_email_verified=bool(current_user["is_email_verified"]),
+    )
+
+
+@app.post(
+    "/conversations",
+    response_model=ConversationResponse,
+    status_code=201,
+    tags=["Communication"],
+)
+def create_new_conversation(
+    current_user=Depends(get_current_user),
+):
+    return create_conversation(current_user["id"])
+
+
+@app.get(
+    "/conversations",
+    response_model=list[ConversationResponse],
+    tags=["Communication"],
+)
+def get_my_conversations(
+    current_user=Depends(get_current_user),
+):
+    return list_conversations(current_user["id"])
+
+
+@app.get(
+    "/conversations/{conversation_id}/messages",
+    response_model=list[ConversationMessageResponse],
+    tags=["Communication"],
+)
+def get_messages(
+    conversation_id: str,
+    current_user=Depends(get_current_user),
+):
+    conversation = get_conversation_for_user(
+        conversation_id,
+        current_user["id"],
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    return get_conversation_messages(conversation_id)
+
+
+@app.post(
+    "/conversations/{conversation_id}/messages",
+    response_model=ConversationChatResponse,
+    tags=["Communication"],
+)
+def send_message(
+    conversation_id: str,
+    request: SendMessageRequest,
+    current_user=Depends(get_current_user),
+):
+    # Check ownership before loading history or calling the LLM.
+    conversation = get_conversation_for_user(
+        conversation_id,
+        current_user["id"],
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    try:
+        answer = run_conversation_chat(
+            user_id=current_user["id"],
+            conversation_id=conversation_id,
+            user_message=request.message,
+        )
+    except Exception as exc:
+        logger.exception("Conversation request failed")
+        raise HTTPException(
+            status_code=500,
+            detail="The chat request failed. Check the server logs.",
+        ) from exc
+
+    return ConversationChatResponse(
+        conversation_id=conversation_id,
+        answer=answer,
+    )
+
+
+@app.post(
+    "/conversations/{conversation_id}/episode",
+    response_model=EpisodicMemoryResponse,
+    tags=["Memory"],
+)
+def create_or_refresh_episode(
+    conversation_id: str,
+    current_user=Depends(get_current_user),
+):
+    # Verify ownership before reading or summarizing the conversation.
+    conversation = get_conversation_for_user(
+        conversation_id,
+        current_user["id"],
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    try:
+        episode = summarize_conversation(
+            user_id=current_user["id"],
+            conversation=dict(conversation),
+        )
+
+        return episode
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        logger.exception("Episode summarization failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not summarize the conversation.",
+        ) from exc
+
+
+@app.get(
+    "/episodes",
+    response_model=list[EpisodicMemoryResponse],
+    tags=["Memory"],
+)
+def get_my_episodes(
+    current_user=Depends(get_current_user),
+):
+    return list_episodic_memories(current_user["id"])
