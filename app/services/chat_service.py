@@ -5,12 +5,9 @@ from langchain_core.messages import (
 )
 
 from app.config import get_chat_model
-from app.database import (
-    get_recent_messages,
-    get_relevant_episodic_memories,
-    save_exchange,
-)
+from app.database import get_recent_messages, save_exchange
 from app.services.memory_service import (
+    get_relevant_episodic_memories,
     retrieve_relevant_memories,
 )
 

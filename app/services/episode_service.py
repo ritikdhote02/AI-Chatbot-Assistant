@@ -1,10 +1,8 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import get_chat_model
-from app.database import (
-    get_conversation_messages,
-    save_episodic_memory,
-)
+from app.database import get_conversation_messages
+from app.services.memory_service import save_episodic_memory
 
 
 def summarize_conversation(

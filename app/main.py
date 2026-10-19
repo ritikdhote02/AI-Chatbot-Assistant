@@ -12,7 +12,6 @@ from app.database import (
     get_conversation_messages,
     init_db,
     list_conversations,
-    list_episodic_memories,
 )
 from app.schemas.auth_schemas import (
     AuthTokenResponse,
@@ -58,14 +57,18 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize SQLite tables for authentication and conversations.
     init_db()
     yield
 
 
 app = FastAPI(
     title="AI Knowledge Assistant",
-    description="Authenticated AI chatbot built with LangChain.",
-    version="0.2.0",
+    description=(
+        "Authenticated AI assistant with conversation history "
+        "and semantic memory powered by ChromaDB."
+    ),
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -76,19 +79,23 @@ def send_verification_link(email: str, token: str) -> None:
         f"{settings['app_base_url']}/auth/verify-email"
         f"?token={quote(token, safe='')}"
     )
-
     send_verification_email(email, verification_url)
 
 
-@app.get("/health")
+@app.get("/health", tags=["Health"])
 def health_check():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------
 
 
 @app.post(
     "/auth/register",
     response_model=MessageResponse,
-    status_code=201,
+    status_code=status.HTTP_201_CREATED,
     tags=["Authentication"],
 )
 def register(request: RegisterRequest):
@@ -100,7 +107,7 @@ def register(request: RegisterRequest):
         )
     except ValueError as exc:
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
 
@@ -109,7 +116,7 @@ def register(request: RegisterRequest):
     except Exception as exc:
         logger.exception("Could not send verification email")
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "Your account was created but the verification email "
                 "could not be sent. Please try the resend endpoint."
@@ -129,13 +136,13 @@ def register(request: RegisterRequest):
 def verify_email(token: str):
     if not token or len(token) > 200:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid verification link.",
         )
 
     if not verify_email_token(token):
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="The verification link is invalid or has expired.",
         )
 
@@ -175,7 +182,7 @@ def resend_verification(request: ResendVerificationRequest):
     except Exception as exc:
         logger.exception("Could not resend verification email")
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The verification email could not be sent. Try again later.",
         ) from exc
 
@@ -187,7 +194,11 @@ def resend_verification(request: ResendVerificationRequest):
     )
 
 
-@app.post("/auth/login", response_model=AuthTokenResponse, tags=["Authentication"])
+@app.post(
+    "/auth/login",
+    response_model=AuthTokenResponse,
+    tags=["Authentication"],
+)
 def login(request: LoginRequest):
     user, error = authenticate_user(
         email=str(request.email),
@@ -196,13 +207,13 @@ def login(request: LoginRequest):
 
     if error == "email_not_verified":
         raise HTTPException(
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Please verify your email before logging in.",
         )
 
     if user is None:
         raise HTTPException(
-            status_code=401,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
@@ -215,7 +226,11 @@ def login(request: LoginRequest):
     )
 
 
-@app.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
+@app.get(
+    "/auth/me",
+    response_model=UserResponse,
+    tags=["Authentication"],
+)
 def get_me(current_user=Depends(get_current_user)):
     return UserResponse(
         id=current_user["id"],
@@ -225,10 +240,15 @@ def get_me(current_user=Depends(get_current_user)):
     )
 
 
+# ---------------------------------------------------------------------
+# Conversations and messages (SQLite)
+# ---------------------------------------------------------------------
+
+
 @app.post(
     "/conversations",
     response_model=ConversationResponse,
-    status_code=201,
+    status_code=status.HTTP_201_CREATED,
     tags=["Communication"],
 )
 def create_new_conversation(
@@ -264,7 +284,7 @@ def get_messages(
 
     if conversation is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation not found.",
         )
 
@@ -281,7 +301,7 @@ def send_message(
     request: SendMessageRequest,
     current_user=Depends(get_current_user),
 ):
-    # Check ownership before loading history or calling the LLM.
+    # Check ownership before reading history or calling the LLM.
     conversation = get_conversation_for_user(
         conversation_id,
         current_user["id"],
@@ -289,7 +309,7 @@ def send_message(
 
     if conversation is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation not found.",
         )
 
@@ -302,7 +322,7 @@ def send_message(
     except Exception as exc:
         logger.exception("Conversation request failed")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="The chat request failed. Check the server logs.",
         ) from exc
 
@@ -310,6 +330,11 @@ def send_message(
         conversation_id=conversation_id,
         answer=answer,
     )
+
+
+# ---------------------------------------------------------------------
+# Episodic memory (ChromaDB)
+# ---------------------------------------------------------------------
 
 
 @app.post(
@@ -329,28 +354,24 @@ def create_or_refresh_episode(
 
     if conversation is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation not found.",
         )
 
     try:
-        episode = summarize_conversation(
+        return summarize_conversation(
             user_id=current_user["id"],
             conversation=dict(conversation),
         )
-
-        return episode
-
     except ValueError as exc:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
-
     except Exception as exc:
         logger.exception("Episode summarization failed")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not summarize the conversation.",
         ) from exc
 
@@ -363,7 +384,12 @@ def create_or_refresh_episode(
 def get_my_episodes(
     current_user=Depends(get_current_user),
 ):
-    return list_episodic_memories(current_user["id"])
+    return memory_service.list_episodic_memories(current_user["id"])
+
+
+# ---------------------------------------------------------------------
+# Long-term memory (ChromaDB)
+# ---------------------------------------------------------------------
 
 
 @app.post(
@@ -374,7 +400,7 @@ def get_my_episodes(
 )
 def create_long_term_memory(
     request: LongTermMemoryCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     try:
         return memory_service.create_memory(
@@ -397,7 +423,7 @@ def create_long_term_memory(
     tags=["Long Term Memory"],
 )
 def list_long_term_memories(
-    current_user: dict = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     return memory_service.get_memories(current_user["id"])
 
@@ -410,7 +436,7 @@ def list_long_term_memories(
 def update_long_term_memory(
     memory_id: str,
     request: LongTermMemoryUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     result = memory_service.edit_memory(
         user_id=current_user["id"],
@@ -435,7 +461,7 @@ def update_long_term_memory(
 )
 def delete_long_term_memory(
     memory_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     deleted = memory_service.remove_memory(
         user_id=current_user["id"],
@@ -447,3 +473,5 @@ def delete_long_term_memory(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Memory not found.",
         )
+
+    return None

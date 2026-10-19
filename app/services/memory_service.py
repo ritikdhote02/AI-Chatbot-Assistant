@@ -1,6 +1,9 @@
 import re
+import uuid
+from datetime import datetime, timezone
 
 from app import database
+from app.services import vector_store_service
 
 ALLOWED_CATEGORIES = {
     "fact",
@@ -9,6 +12,15 @@ ALLOWED_CATEGORIES = {
     "decision",
     "correction",
 }
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stable_id(*parts: str) -> str:
+    value = ":".join(parts)
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
 
 
 def validate_memory(
@@ -21,11 +33,17 @@ def validate_memory(
 
     if not re.fullmatch(r"[a-z0-9_]+", key):
         raise ValueError(
-            "Memory keys may contain only letters, numbers, and underscores."
+            "Memory keys may contain only letters, numbers, " "and underscores."
         )
 
     if not value:
         raise ValueError("Memory value cannot be empty.")
+
+    if len(key) > 100:
+        raise ValueError("Memory key cannot exceed 100 characters.")
+
+    if len(value) > 2000:
+        raise ValueError("Memory value cannot exceed 2000 characters.")
 
     if category not in ALLOWED_CATEGORIES:
         raise ValueError("Invalid memory category.")
@@ -33,11 +51,28 @@ def validate_memory(
     return key, value, category
 
 
+def _long_term_record(
+    memory_id: str,
+    metadata: dict,
+    content: str,
+) -> dict:
+    return {
+        "id": memory_id,
+        "user_id": metadata["user_id"],
+        "memory_key": metadata["memory_key"],
+        "memory_value": metadata["memory_value"],
+        "category": metadata["category"],
+        "source_conversation_id": metadata.get("source_conversation_id"),
+        "created_at": metadata["created_at"],
+        "updated_at": metadata["updated_at"],
+    }
+
+
 def create_memory(
     user_id: str,
     memory_key: str,
     memory_value: str,
-    category: str,
+    category: str = "fact",
     source_conversation_id: str | None = None,
 ) -> dict:
     key, value, category = validate_memory(
@@ -51,20 +86,61 @@ def create_memory(
             source_conversation_id,
             user_id,
         )
+
         if conversation is None:
             raise ValueError("Source conversation not found.")
 
-    return database.save_long_term_memory(
-        user_id=user_id,
-        memory_key=key,
-        memory_value=value,
-        category=category,
-        source_conversation_id=source_conversation_id,
+    memory_id = _stable_id(
+        "long_term",
+        user_id,
+        key,
+    )
+
+    existing = vector_store_service.get_memory_by_id(memory_id)
+    timestamp = _now()
+
+    metadata = {
+        "user_id": user_id,
+        "memory_type": "long_term",
+        "memory_key": key,
+        "memory_value": value,
+        "category": category,
+        "created_at": (existing["metadata"]["created_at"] if existing else timestamp),
+        "updated_at": timestamp,
+    }
+
+    if source_conversation_id is not None:
+        metadata["source_conversation_id"] = source_conversation_id
+
+    content = f"Memory key: {key}\n" f"Category: {category}\n" f"Fact: {value}"
+
+    vector_store_service.upsert_memory(
+        memory_id=memory_id,
+        content=content,
+        metadata=metadata,
+    )
+
+    return _long_term_record(
+        memory_id,
+        metadata,
+        content,
     )
 
 
 def get_memories(user_id: str) -> list[dict]:
-    return database.list_long_term_memories(user_id)
+    records = vector_store_service.list_memories(
+        user_id=user_id,
+        memory_type="long_term",
+    )
+
+    return [
+        _long_term_record(
+            record["id"],
+            record["metadata"],
+            record["content"],
+        )
+        for record in records
+    ]
 
 
 def edit_memory(
@@ -73,75 +149,59 @@ def edit_memory(
     memory_value: str,
     category: str,
 ) -> dict | None:
-    _, value, category = validate_memory(
-        "valid_key",
+    existing = vector_store_service.get_memory_by_id(memory_id)
+
+    if (
+        existing is None
+        or existing["metadata"].get("user_id") != user_id
+        or existing["metadata"].get("memory_type") != "long_term"
+    ):
+        return None
+
+    key, value, category = validate_memory(
+        existing["metadata"]["memory_key"],
         memory_value,
         category,
     )
 
-    return database.update_long_term_memory(
-        user_id=user_id,
+    metadata = {
+        **existing["metadata"],
+        "memory_key": key,
+        "memory_value": value,
+        "category": category,
+        "updated_at": _now(),
+    }
+
+    content = f"Memory key: {key}\n" f"Category: {category}\n" f"Fact: {value}"
+
+    vector_store_service.upsert_memory(
         memory_id=memory_id,
-        memory_value=value,
-        category=category,
+        content=content,
+        metadata=metadata,
+    )
+
+    return _long_term_record(
+        memory_id,
+        metadata,
+        content,
     )
 
 
-def remove_memory(user_id: str, memory_id: str) -> bool:
-    return database.delete_long_term_memory(
-        user_id=user_id,
-        memory_id=memory_id,
-    )
+def remove_memory(
+    user_id: str,
+    memory_id: str,
+) -> bool:
+    existing = vector_store_service.get_memory_by_id(memory_id)
 
+    if (
+        existing is None
+        or existing["metadata"].get("user_id") != user_id
+        or existing["metadata"].get("memory_type") != "long_term"
+    ):
+        return False
 
-STOPWORDS = {
-    "a",
-    "an",
-    "the",
-    "is",
-    "are",
-    "was",
-    "were",
-    "i",
-    "me",
-    "my",
-    "mine",
-    "you",
-    "your",
-    "what",
-    "when",
-    "where",
-    "which",
-    "who",
-    "how",
-    "do",
-    "does",
-    "did",
-    "can",
-    "could",
-    "would",
-    "should",
-    "to",
-    "of",
-    "in",
-    "on",
-    "for",
-    "and",
-    "or",
-    "it",
-    "this",
-    "that",
-    "with",
-    "about",
-    "tell",
-    "please",
-    "remember",
-}
-
-
-def _tokenize(text: str) -> set[str]:
-    words = re.findall(r"[a-z0-9_]+", text.lower())
-    return {word for word in words if len(word) > 1 and word not in STOPWORDS}
+    vector_store_service.delete_memory(memory_id)
+    return True
 
 
 def retrieve_relevant_memories(
@@ -149,35 +209,166 @@ def retrieve_relevant_memories(
     query: str,
     limit: int = 5,
 ) -> list[dict]:
-    query_words = _tokenize(query)
-
-    if not query_words:
-        return []
-
-    # Use the existing user-scoped database function.
-    memories = database.list_long_term_memories(user_id)
-
-    scored_memories = []
-
-    for memory in memories:
-        searchable_text = memory["memory_key"] + " " + memory["memory_value"]
-        memory_words = _tokenize(searchable_text)
-
-        overlap = query_words & memory_words
-
-        if not overlap:
-            continue
-
-        score = len(overlap) / len(query_words)
-
-        scored_memories.append((score, memory))
-
-    scored_memories.sort(
-        key=lambda item: (
-            item[0],
-            item[1]["updated_at"],
-        ),
-        reverse=True,
+    results = vector_store_service.search_memories(
+        user_id=user_id,
+        query=query,
+        limit=limit,
+        memory_type="long_term",
     )
 
-    return [memory for score, memory in scored_memories[:limit]]
+    memories = []
+
+    for result in results:
+        metadata = result["metadata"]
+
+        memories.append(
+            {
+                "id": result["id"],
+                "user_id": metadata["user_id"],
+                "memory_key": metadata["memory_key"],
+                "memory_value": metadata["memory_value"],
+                "category": metadata["category"],
+                "source_conversation_id": metadata.get("source_conversation_id"),
+                "distance": result["distance"],
+            }
+        )
+
+    return memories
+
+
+def save_episodic_memory(
+    user_id: str,
+    conversation_id: str,
+    title: str,
+    summary: str,
+    source_message_count: int,
+) -> dict:
+    conversation = database.get_conversation_for_user(
+        conversation_id,
+        user_id,
+    )
+
+    if conversation is None:
+        raise ValueError("Conversation not found.")
+
+    if not summary.strip():
+        raise ValueError("Episode summary cannot be empty.")
+
+    episode_id = _stable_id(
+        "episodic",
+        user_id,
+        conversation_id,
+    )
+
+    existing = vector_store_service.get_memory_by_id(episode_id)
+
+    timestamp = _now()
+
+    metadata = {
+        "user_id": user_id,
+        "memory_type": "episodic",
+        "conversation_id": conversation_id,
+        "title": title.strip() or "Conversation episode",
+        "source_message_count": max(0, source_message_count),
+        "created_at": (existing["metadata"]["created_at"] if existing else timestamp),
+        "updated_at": timestamp,
+    }
+
+    content = (
+        f"Episode title: {metadata['title']}\n"
+        f"Conversation summary: {summary.strip()}"
+    )
+
+    vector_store_service.upsert_memory(
+        memory_id=episode_id,
+        content=content,
+        metadata=metadata,
+    )
+
+    return {
+        "id": episode_id,
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "title": metadata["title"],
+        "summary": summary.strip(),
+        "source_message_count": metadata["source_message_count"],
+        "created_at": metadata["created_at"],
+        "updated_at": metadata["updated_at"],
+    }
+
+
+def list_episodic_memories(user_id: str) -> list[dict]:
+    records = vector_store_service.list_memories(
+        user_id=user_id,
+        memory_type="episodic",
+    )
+
+    episodes = []
+
+    for record in records:
+        metadata = record["metadata"]
+        content = record["content"]
+        summary_prefix = "Conversation summary:"
+
+        summary = (
+            content.split(summary_prefix, 1)[1].strip()
+            if summary_prefix in content
+            else content
+        )
+
+        episodes.append(
+            {
+                "id": record["id"],
+                "user_id": metadata["user_id"],
+                "conversation_id": metadata["conversation_id"],
+                "title": metadata["title"],
+                "summary": summary,
+                "source_message_count": metadata["source_message_count"],
+                "created_at": metadata["created_at"],
+                "updated_at": metadata["updated_at"],
+            }
+        )
+
+    return episodes
+
+
+def get_relevant_episodic_memories(
+    user_id: str,
+    query: str,
+    limit: int = 3,
+) -> list[dict]:
+    results = vector_store_service.search_memories(
+        user_id=user_id,
+        query=query,
+        limit=limit,
+        memory_type="episodic",
+    )
+
+    episodes = []
+
+    for result in results:
+        metadata = result["metadata"]
+        content = result["content"]
+        summary_prefix = "Conversation summary:"
+
+        summary = (
+            content.split(summary_prefix, 1)[1].strip()
+            if summary_prefix in content
+            else content
+        )
+
+        episodes.append(
+            {
+                "id": result["id"],
+                "user_id": metadata["user_id"],
+                "conversation_id": metadata["conversation_id"],
+                "title": metadata["title"],
+                "summary": summary,
+                "source_message_count": metadata["source_message_count"],
+                "created_at": metadata["created_at"],
+                "updated_at": metadata["updated_at"],
+                "distance": result["distance"],
+            }
+        )
+
+    return episodes
