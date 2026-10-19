@@ -171,7 +171,7 @@ sequenceDiagram
     participant SMTP as SMTP server
 
     Client->>API: POST /auth/register
-    API->>Auth: Validate and hash password; create account
+    API->>Auth: Hash password and create account
     Auth->>DB: Store account and hashed verification token
     API->>SMTP: Send verification link (30-minute expiry)
     SMTP-->>Client: Verification email
@@ -575,4 +575,3 @@ Suggested contribution workflow:
 2. Keep changes scoped and add or update tests where applicable.
 3. Run `poetry run python code-quality.py`.
 4. Open a pull request describing the change and its validation.
-
