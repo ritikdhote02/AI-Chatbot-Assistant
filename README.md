@@ -202,7 +202,7 @@ configuration, but the code does not apply a relevance-score cutoff.
 ## Project structure
 
 ```text
-ai-knowledge-assistant/
+AI-Chatbot-Assistant/
 ├── .env.example                 # Placeholder-only local configuration template
 ├── .flake8                      # Flake8 settings
 ├── .gitignore                   # Ignores local secrets, databases, and caches
@@ -302,8 +302,8 @@ curl -sSL https://install.python-poetry.org | python3 -
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/ritikdhote02/ai-knowledge-assistant.git
-cd ai-knowledge-assistant
+git clone https://github.com/ritikdhote02/AI-Chatbot-Assistant.git
+cd AI-Chatbot-Assistant
 ```
 
 ### 2. Select Python and install dependencies
@@ -353,11 +353,6 @@ poetry run uvicorn app.main:app --reload
 
 Open Swagger UI at <http://127.0.0.1:8000/docs>. The generated OpenAPI document
 is at <http://127.0.0.1:8000/openapi.json>.
-
-The repository currently does **not** mount a health router, so
-`GET http://127.0.0.1:8000/health` returns `404` even though a health handler
-is declared in `app/main.py`. See
-[Known limitations](#known-limitations-and-attention-items).
 
 ## Azure OpenAI setup
 
