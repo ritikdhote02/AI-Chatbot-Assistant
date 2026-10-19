@@ -204,7 +204,6 @@ configuration, but the code does not apply a relevance-score cutoff.
 ```text
 ai-knowledge-assistant/
 ├── .env.example                 # Placeholder-only local configuration template
-├── .example.env                 # Existing legacy template, retained unchanged
 ├── .flake8                      # Flake8 settings
 ├── .gitignore                   # Ignores local secrets, databases, and caches
 ├── README.md
