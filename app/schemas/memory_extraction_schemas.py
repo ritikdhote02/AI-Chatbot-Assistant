@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.memory_schemas import LongTermMemoryResponse
+
 MAX_MESSAGES = 30
 MAX_MESSAGE_CHARS = 3000
 MAX_TRANSCRIPT_CHARS = 20000
@@ -54,3 +56,10 @@ class MemoryExtractionResult(BaseModel):
             "Return an empty list when there are none."
         ),
     )
+
+
+class MemoryExtractionRunResponse(BaseModel):
+    conversation_id: str
+    candidates_found: int
+    saved_count: int
+    memories: list[LongTermMemoryResponse] = Field(default_factory=list)

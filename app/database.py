@@ -255,6 +255,22 @@ def save_exchange(
             )
 
 
+def get_user_message_count(conversation_id: str) -> int:
+    """Count user messages in a conversation."""
+    with closing(get_connection()) as connection:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS message_count
+            FROM messages
+            WHERE conversation_id = ?
+              AND role = 'user'
+            """,
+            (conversation_id,),
+        ).fetchone()
+
+    return int(row["message_count"])
+
+
 if __name__ == "__main__":
     init_db()
     print(f"Database initialized at: {DB_PATH.resolve()}")
