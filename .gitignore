@@ -221,3 +221,4 @@ __marimo__/
 
 data/*.sqlite3
 .vscode/
+data/chroma_db/

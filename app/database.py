@@ -128,6 +128,35 @@ def init_db():
             ON episodic_memories(user_id, updated_at)
             """)
 
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS long_term_memories (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                memory_key TEXT NOT NULL,
+                memory_value TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'fact',
+                source_conversation_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+                FOREIGN KEY (user_id)
+                    REFERENCES users(id)
+                    ON DELETE CASCADE,
+
+                FOREIGN KEY (source_conversation_id)
+                    REFERENCES conversations(id)
+                    ON DELETE SET NULL,
+
+                UNIQUE (user_id, memory_key)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS
+            idx_long_term_memories_user
+            ON long_term_memories(user_id, updated_at)
+        """)
+
 
 def create_conversation(user_id: str) -> dict:
     conversation_id = str(uuid4())
@@ -430,6 +459,119 @@ def get_relevant_episodic_memories(
     )
 
     return [episode for _, episode in scored[:limit]]
+
+
+def save_long_term_memory(
+    user_id: str,
+    memory_key: str,
+    memory_value: str,
+    category: str = "fact",
+    source_conversation_id: str | None = None,
+) -> dict:
+    memory_id = str(uuid4())
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO long_term_memories (
+                id,
+                user_id,
+                memory_key,
+                memory_value,
+                category,
+                source_conversation_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(user_id, memory_key)
+            DO UPDATE SET
+                memory_value = excluded.memory_value,
+                category = excluded.category,
+                source_conversation_id =
+                    excluded.source_conversation_id,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                memory_id,
+                user_id,
+                memory_key,
+                memory_value,
+                category,
+                source_conversation_id,
+            ),
+        )
+
+        row = connection.execute(
+            """
+            SELECT *
+            FROM long_term_memories
+            WHERE user_id = ? AND memory_key = ?
+            """,
+            (user_id, memory_key),
+        ).fetchone()
+
+        return dict(row)
+
+
+def list_long_term_memories(user_id: str) -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM long_term_memories
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
+
+def update_long_term_memory(
+    user_id: str,
+    memory_id: str,
+    memory_value: str,
+    category: str,
+) -> dict | None:
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE long_term_memories
+            SET memory_value = ?,
+                category = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ?
+            """,
+            (memory_value, category, memory_id, user_id),
+        )
+
+        row = connection.execute(
+            """
+            SELECT *
+            FROM long_term_memories
+            WHERE id = ? AND user_id = ?
+            """,
+            (memory_id, user_id),
+        ).fetchone()
+
+        return dict(row) if row else None
+
+
+def delete_long_term_memory(
+    user_id: str,
+    memory_id: str,
+) -> bool:
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM long_term_memories
+            WHERE id = ? AND user_id = ?
+            """,
+            (memory_id, user_id),
+        )
+
+        return cursor.rowcount > 0
 
 
 if __name__ == "__main__":
