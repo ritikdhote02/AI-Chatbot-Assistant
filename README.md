@@ -30,7 +30,6 @@ the assistant can use recent messages and relevant memories as context.
 - [Security notes](#security-notes)
 - [Troubleshooting](#troubleshooting)
 - [Development and contribution](#development-and-contribution)
-- [Known limitations and attention items](#known-limitations-and-attention-items)
 
 ## Features
 
@@ -576,23 +575,4 @@ Suggested contribution workflow:
 2. Keep changes scoped and add or update tests where applicable.
 3. Run `poetry run python code-quality.py`.
 4. Open a pull request describing the change and its validation.
-
-## Known limitations and attention items
-
-- **Health route is not mounted:** `app/main.py` defines `/health` on a local
-  router but does not include that router in the FastAPI application. There is
-  no `/health` operation in the generated API schema.
-- **No automated tests are present:** behavior has not been established by a
-  repository test suite.
-- **`SMTP_USE_TLS` is currently unused:** the template includes it, but the
-  email service always invokes STARTTLS.
-- **Episodic summarization is explicit:** chat requests retrieve existing
-  episodic memories, but the chat endpoint does not automatically create new
-  episodes.
-- **Background memory extraction is in-process:** it uses FastAPI background
-  tasks and does not provide a persistent job queue.
-- **`app/schemas/chat_schemas.py` is not used by the current registered
-  endpoints:** current chat routes use the conversation schemas.
-- **Version metadata differs:** `pyproject.toml` declares project version
-  `0.1.0`, while the FastAPI application metadata reports `0.3.0`.
 
