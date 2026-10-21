@@ -23,6 +23,7 @@ the assistant can use recent messages and relevant memories as context.
 - [Technology stack](#technology-stack)
 - [Prerequisites](#prerequisites)
 - [Local setup](#local-setup)
+- [Frontend setup](#frontend-setup)
 - [Azure OpenAI setup](#azure-openai-setup)
 - [Configuration reference](#configuration-reference)
 - [Storage](#storage)
@@ -236,7 +237,19 @@ AI-Chatbot-Assistant/
 │       ├── memory_service.py    # Long-term and episodic memory operations
 │       └── vector_store_service.py # Persistent ChromaDB access and semantic search
 ├── code-quality.py              # Import sorting, formatting, lint, syntax checks
+├── run_application.py           # Install dependencies and run backend + frontend
 ├── data/                        # Runtime-created SQLite and ChromaDB storage (ignored)
+├── frontend/
+│   ├── README.md                # Frontend-specific overview and commands
+│   ├── package.json             # Frontend dependencies and npm scripts
+│   ├── package-lock.json        # Locked npm dependency versions
+│   ├── vite.config.js           # Vite, React, Tailwind, and development API proxy
+│   └── src/
+│       ├── api/                 # API client
+│       ├── components/          # Authentication, chat, common, and layout UI
+│       ├── context/             # Authentication and toast state
+│       ├── pages/               # Login, registration, chat, episodes, and memories
+│       └── assets/              # Frontend assets and email template
 ├── poetry.lock                  # Resolved dependency versions
 └── pyproject.toml               # Python and dependency constraints
 ```
@@ -278,6 +291,7 @@ versions in `poetry.lock`.
   system's package manager.
 - Poetry 2.x (the project uses Poetry's dependency groups and the
   `package-mode` setting).
+- Node.js with npm for the React/Vite frontend and the combined launcher.
 - An Azure OpenAI resource with a chat deployment and an embeddings deployment
   for chat and semantic memory features.
 - SMTP credentials for registration and verification email delivery.
@@ -353,6 +367,68 @@ poetry run uvicorn app.main:app --reload
 
 Open Swagger UI at <http://127.0.0.1:8000/docs>. The generated OpenAPI document
 is at <http://127.0.0.1:8000/openapi.json>.
+
+### Run the full application with one command
+
+After installing Python, Poetry, Node.js/npm and configuring `.env`, make sure
+Poetry uses Python 3.14. If you have not selected it yet, run this once from
+the repository root:
+
+```bash
+poetry env use 3.14
+```
+
+Then launch the full application from the repository root:
+
+```bash
+python3 run_application.py
+```
+
+The script installs backend dependencies with `poetry install --with dev`,
+installs the locked frontend dependencies with `npm ci`, then starts
+`uvicorn app.main:app --reload` and `npm run dev` concurrently. Both servers
+write their output to the same terminal. Press **Ctrl+C** to stop them.
+Poetry runs Uvicorn inside the Poetry-managed environment; the script does not
+need to activate that environment in your shell.
+
+## Frontend setup
+
+The frontend is a React 18 application built with Vite. The repository includes
+`frontend/package-lock.json`, so use `npm ci` to install the locked dependencies.
+The frontend manifest does not pin a Node.js or npm version; install a current
+Node.js LTS release that provides npm.
+
+Start the backend using the [local setup](#local-setup) instructions first, then
+open a second terminal at the repository root and run:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Open <http://localhost:5173>. In development, Vite proxies `/auth`,
+`/conversations`, `/memories`, and `/episodes` to
+`http://127.0.0.1:8000`, so the backend must be running at that address.
+
+The API client reads an optional `VITE_API_URL`. For a non-proxied API base URL
+in a local Vite environment, create `frontend/.env.local` and set:
+
+```dotenv
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+The frontend also provides production build and local preview scripts:
+
+```bash
+npm run build
+npm run preview
+```
+
+Run these commands from `frontend/`. The production build is written to
+`frontend/dist/`. The repository does not include a production deployment
+configuration; configure the deployed frontend's API URL and backend
+cross-origin policy for your hosting environment.
 
 ## Azure OpenAI setup
 
