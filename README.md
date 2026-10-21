@@ -9,11 +9,6 @@ Azure OpenAI-powered assistant. It persists chat history in SQLite and stores
 searchable long-term and episodic memories in ChromaDB. During a conversation,
 the assistant can use recent messages and relevant memories as context.
 
-> **Project status:** This README describes the code currently in this
-> repository. In particular, `/health` is not currently registered with the
-> FastAPI application, and the repository does not contain an automated test
-> suite. See [Known limitations](#known-limitations-and-attention-items).
-
 ## Table of contents
 
 - [Features](#features)
