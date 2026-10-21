@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{title}} — Chat Point</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        background-color: #020617;
+        color: #f8fafc;
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 20px;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid rgba(244, 63, 94, 0.25);
+        border-radius: 24px;
+        padding: 40px;
+        max-width: 460px;
+        width: 100%;
+        text-align: center;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      }
+      .icon-circle {
+        width: 64px;
+        height: 64px;
+        border-radius: 20px;
+        background: rgba(244, 63, 94, 0.15);
+        border: 1px solid rgba(244, 63, 94, 0.3);
+        color: #fb7185;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        font-weight: 700;
+        margin-bottom: 20px;
+      }
+      h1 { font-size: 20px; font-weight: 800; color: #ffffff; margin-bottom: 8px; }
+      p { font-size: 13px; color: #94a3b8; line-height: 1.6; margin-bottom: 24px; }
+      .btn {
+        display: inline-block;
+        width: 100%;
+        padding: 13px 24px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #ffffff;
+        background: #334155;
+        border-radius: 12px;
+        text-decoration: none;
+        transition: background 0.15s ease;
+      }
+      .btn:hover { background: #475569; }
+      .brand { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; margin-top: 24px; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="icon-circle">{{icon}}</div>
+      <h1>{{title}}</h1>
+      <p>{{message}}</p>
+      <a href="http://localhost:5173/login" class="btn">Return to Sign In</a>
+      <div class="brand">Chat Point • Knowledge Assistant</div>
+    </div>
+  </body>
+</html>
