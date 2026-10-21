@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -26,6 +27,21 @@ from app.services.email_service import send_verification_email
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+
+
+def _render_verify_page(
+    template_name: str, replacements: dict[str, str] | None = None
+) -> str:
+    template_path = TEMPLATES_DIR / template_name
+    if template_path.exists():
+        content = template_path.read_text(encoding="utf-8")
+        if replacements:
+            for key, value in replacements.items():
+                content = content.replace(f"{{{{{key}}}}}", value)
+        return content
+    return "<h1>Verification Status</h1>"
 
 
 def send_verification_link(email: str, token: str) -> None:
@@ -80,27 +96,41 @@ def register(request: RegisterRequest):
 )
 def verify_email(token: str):
     if not token or len(token) > 200:
-        raise HTTPException(
+        html = _render_verify_page(
+            "verify_error.html",
+            {
+                "title": "Invalid Verification Link",
+                "message": (
+                    "This verification link is malformed or invalid. "
+                    "Please check the URL in your verification email."
+                ),
+                "icon": "!",
+            },
+        )
+        return HTMLResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid verification link.",
+            content=html,
         )
 
     if not verify_email_token(token):
-        raise HTTPException(
+        html = _render_verify_page(
+            "verify_error.html",
+            {
+                "title": "Link Expired or Already Used",
+                "message": (
+                    "This verification link has expired (30-minute limit) "
+                    "or has already been used to verify your account."
+                ),
+                "icon": "⏳",
+            },
+        )
+        return HTMLResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The verification link is invalid or has expired.",
+            content=html,
         )
 
-    return HTMLResponse("""
-        <!doctype html>
-        <html>
-          <head><title>Email verified</title></head>
-          <body>
-            <h1>Email verified successfully!</h1>
-            <p>You can now return to the application and log in.</p>
-          </body>
-        </html>
-        """)
+    html = _render_verify_page("verify_success.html")
+    return HTMLResponse(content=html)
 
 
 @router.post(
