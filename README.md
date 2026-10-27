@@ -23,6 +23,7 @@ the assistant can use recent messages and relevant memories as context.
 - [Technology stack](#technology-stack)
 - [Prerequisites](#prerequisites)
 - [Local setup](#local-setup)
+- [Docker Compose](#docker-compose)
 - [Frontend setup](#frontend-setup)
 - [Azure OpenAI setup](#azure-openai-setup)
 - [Configuration reference](#configuration-reference)
@@ -390,6 +391,29 @@ installs the locked frontend dependencies with `npm ci`, then starts
 write their output to the same terminal. Press **Ctrl+C** to stop them.
 Poetry runs Uvicorn inside the Poetry-managed environment; the script does not
 need to activate that environment in your shell.
+
+## Docker Compose
+
+Install Docker with the Compose plugin, then create the local environment file
+and start both services:
+
+```bash
+cp .env.example .env
+# Edit .env and provide your Azure OpenAI, JWT, and SMTP settings.
+docker compose up --build
+```
+
+Open the frontend at <http://localhost:8080>. The API and its Swagger UI are
+available at <http://localhost:8000/docs>. The frontend container serves the
+production Vite build and proxies API requests to the backend container.
+
+The backend and frontend images are built from `app/Dockerfile` and
+`frontend/Dockerfile`, respectively; `docker-compose.yml` at the repository
+root orchestrates both services.
+
+SQLite and ChromaDB data use the existing repository `data/` directory, shared
+with the local application. They persist when containers are recreated. Stop
+the services with `docker compose down`; this leaves the data files in place.
 
 ## Frontend setup
 
