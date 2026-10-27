@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -73,6 +74,38 @@ def fix_whitespace(python_files: list[Path]) -> None:
     print(f"Whitespace cleanup: updated {changed_files} file(s).")
 
 
+def clear_python_caches() -> None:
+    """Remove Python bytecode and common tool caches from the project."""
+    removed_directories = 0
+    removed_bytecode_files = 0
+
+    for current_directory, directories, filenames in os.walk(ROOT):
+        for directory in directories[:]:
+            directory_path = Path(current_directory) / directory
+
+            if directory in {
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+            }:
+                shutil.rmtree(directory_path)
+                directories.remove(directory)
+                removed_directories += 1
+            elif directory in EXCLUDED_DIRECTORIES:
+                directories.remove(directory)
+
+        for filename in filenames:
+            if filename.endswith((".pyc", ".pyo")):
+                (Path(current_directory) / filename).unlink()
+                removed_bytecode_files += 1
+
+    print(
+        f"Python cache cleanup: {removed_directories} cache directories and "
+        f"{removed_bytecode_files} bytecode files removed."
+    )
+
+
 def run_command(label: str, command: list[str]) -> bool:
     """Run one quality check and report its command and result."""
     print(f"\n--- {label} ---")
@@ -112,6 +145,7 @@ def main() -> int:
         "Check Python syntax",
         [sys.executable, "-m", "compileall", "-q", *relative_files],
     )
+    clear_python_caches()
 
     if all_passed:
         print("\nCode quality checks passed.")
