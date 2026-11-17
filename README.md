@@ -7,12 +7,14 @@
 AI Knowledge Assistant is a Python API for authenticated conversations with an
 Azure OpenAI-powered assistant. It persists chat history in SQLite and stores
 searchable long-term and episodic memories in ChromaDB. During a conversation,
-the assistant can use recent messages and relevant memories as context.
+the assistant can use recent messages and relevant memories as context, and
+call date/time or web-search tools when appropriate.
 
 ## Table of contents
 
 - [Features](#features)
 - [Architecture](#architecture)
+- [Tool calling](#tool-calling)
 - [Memory model](#memory-model)
 - [Project structure](#project-structure)
 - [Technology stack](#technology-stack)
@@ -45,6 +47,9 @@ the assistant can use recent messages and relevant memories as context.
   or scheduled as a FastAPI background task after each fifth user message.
 - **Semantic search:** Azure OpenAI embeddings and ChromaDB similarity search
   are used to retrieve relevant episodic and long-term memories.
+- **Tool calling:** During chat, the assistant can retrieve the current
+  date/time for an IANA timezone and search the web for current information.
+  Web search uses Tavily and requires `TAVILY_API_KEY`.
 - **REST API validation:** FastAPI endpoints use Pydantic request and response
   models. Interactive API documentation is available at `/docs`.
 
@@ -68,9 +73,12 @@ flowchart LR
     EpisodeService[Episode service]
     Extraction[Memory extraction service]
     MemoryService[Memory service]
+    ToolService[Tool service]
     SQLite[(SQLite<br/>accounts, tokens, conversations, messages)]
     AzureChat[Azure OpenAI<br/>chat deployment]
     AzureEmbeddings[Azure OpenAI<br/>embedding deployment]
+    DateTime[Date/time tool]
+    Tavily[Tavily web search]
     Chroma[(Persistent ChromaDB<br/>episodic and long-term memories)]
     SMTP[SMTP server]
 
@@ -89,6 +97,9 @@ flowchart LR
     ChatService --> SQLite
     ChatService --> MemoryService
     ChatService --> AzureChat
+    ChatService --> ToolService
+    ToolService --> DateTime
+    ToolService --> Tavily
     EpisodeService --> SQLite
     EpisodeService --> AzureChat
     EpisodeService --> MemoryService
@@ -109,6 +120,9 @@ sequenceDiagram
     participant Memory as Memory service / ChromaDB
     participant Embed as Azure OpenAI embeddings
     participant Chat as Azure OpenAI chat
+    participant Tools as Tool service
+    participant DateTime as Date/time tool
+    participant Tavily as Tavily web search
 
     Client->>API: POST /conversations/{id}/messages (Bearer token)
     API->>DB: Verify conversation belongs to authenticated user
@@ -118,7 +132,20 @@ sequenceDiagram
     API->>Memory: Search this user's long-term memories (top 5)
     Memory->>Embed: Embed query for semantic search
     API->>Chat: Send system prompt, history, retrieved memories, new message
-    Chat-->>API: Assistant response
+    Chat-->>API: Final answer or requested tool call
+    opt The model requests a tool
+        API->>Tools: Execute requested tool
+        alt Current date/time
+            Tools->>DateTime: Get date/time for requested timezone
+            DateTime-->>Tools: Date, time, offset, and timestamp
+        else Current information
+            Tools->>Tavily: Search query (up to 5 results)
+            Tavily-->>Tools: Titles, URLs, and result content
+        end
+        Tools-->>API: Append tool result and request the next model response
+        API->>Chat: Continue with tool result
+        Chat-->>API: Final answer (or another tool call)
+    end
     API->>DB: Persist user message and assistant response
     API-->>Client: Chat response
 ```
@@ -127,6 +154,24 @@ The source adds retrieved episodes and long-term memories to the system prompt
 as contextual data. Memory records are explicitly framed as historical
 information, not instructions. The new user message is added after the stored
 history, and the exchange is saved after the model responds.
+
+## Tool calling
+
+The chat service binds the available tools to the Azure OpenAI chat model and
+runs a tool-calling loop when the model requests a tool. Tool results are added
+to the current model conversation; only the final assistant answer is saved as
+the assistant message. The loop allows up to four tool-call rounds per chat
+request. Tools are not exposed as separate HTTP endpoints.
+
+| Tool | Purpose and behavior |
+|---|---|
+| `get_current_datetime` | Returns the current date, time, UTC offset, and ISO timestamp for an IANA timezone. Defaults to `Asia/Kolkata`; the model is instructed to use the user's requested location when one is provided. |
+| `search_web` | Searches current internet information using Tavily's general topic and basic search depth, returning up to five results with each result's title, URL, and content. The assistant is instructed to use it for time-sensitive questions, treat page content as untrusted, and cite relevant source titles and URLs. |
+
+Web search requires a valid `TAVILY_API_KEY`. If a search cannot be completed,
+the tool returns an unavailable message rather than fabricated results. Tool
+calling depends on an Azure OpenAI chat deployment that supports tool/function
+calling.
 
 ### Memory extraction and persistence
 
@@ -222,16 +267,21 @@ AI-Chatbot-Assistant/
 │   │   ├── episode_schemas.py
 │   │   ├── memory_extraction_schemas.py
 │   │   └── memory_schemas.py
-│   └── services/
-│       ├── __init__.py
-│       ├── auth_service.py       # Passwords, verification tokens, JWTs
-│       ├── chat_service.py       # Prompt construction, context retrieval, Azure chat call
-│       ├── email_service.py     # SMTP verification email delivery
-│       ├── embedding_service.py # Azure OpenAI embeddings configuration
-│       ├── episode_service.py   # Conversation summarization into episodic memory
-│       ├── memory_extraction_service.py
-│       ├── memory_service.py    # Long-term and episodic memory operations
-│       └── vector_store_service.py # Persistent ChromaDB access and semantic search
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── auth_service.py       # Passwords, verification tokens, JWTs
+│   │   ├── chat_service.py       # Prompt construction, context retrieval, tool-enabled chat
+│   │   ├── email_service.py     # SMTP verification email delivery
+│   │   ├── embedding_service.py # Azure OpenAI embeddings configuration
+│   │   ├── episode_service.py   # Conversation summarization into episodic memory
+│   │   ├── memory_extraction_service.py
+│   │   ├── memory_service.py    # Long-term and episodic memory operations
+│   │   ├── tool_service.py      # Tool registry and model tool-calling loop
+│   │   └── vector_store_service.py # Persistent ChromaDB access and semantic search
+│   └── tools/
+│       ├── datetime_tool.py     # Current date and time for an IANA timezone
+│       ├── web_search_tool.py   # Tavily web search
+│       └── test_web_tool.py     # Manual web-search smoke script
 ├── code-quality.py              # Import sorting, formatting, lint, syntax checks
 ├── run_application.py           # Install dependencies and run backend + frontend
 ├── data/                        # Runtime-created SQLite and ChromaDB storage (ignored)
@@ -266,6 +316,7 @@ versions in `poetry.lock`.
 | LangChain | `>=1.4.6,<2.0.0` | Message composition and model integrations |
 | `langchain-openai` | `>=1.7.2,<2.0.0` | Azure OpenAI chat and embeddings clients |
 | `langchain-chroma` | `>=1.1.0,<2.0.0` | LangChain integration for persistent Chroma |
+| `langchain-tavily` | `>=0.2.18,<0.3.0` | Tavily web-search tool integration |
 | ChromaDB | `>=1.5.9,<2.0.0` | Persistent vector store and similarity search |
 | Pydantic / `pydantic[email]` | `>=2.14.1,<3.0.0` | Request/response validation and email validation |
 | `python-dotenv` | `>=1.2.4,<2.0.0` | Load local `.env` configuration |
@@ -289,7 +340,10 @@ versions in `poetry.lock`.
   `package-mode` setting).
 - Node.js with npm for the React/Vite frontend and the combined launcher.
 - An Azure OpenAI resource with a chat deployment and an embeddings deployment
-  for chat and semantic memory features.
+  for chat and semantic memory features. The chat deployment must support
+  tool/function calling to use the chat tools.
+- A Tavily API key for web search. The date/time tool does not require an
+  external API key.
 - SMTP credentials for registration and verification email delivery.
 
 Confirm the tools are available:
@@ -332,8 +386,8 @@ and `poetry.lock`; `--with dev` also installs formatting and lint tools.
 cp .env.example .env
 ```
 
-Edit `.env` and provide valid Azure OpenAI and SMTP credentials. Keep `.env`
-private; it is excluded by `.gitignore`.
+Edit `.env` and provide valid Azure OpenAI, Tavily (for web search), and SMTP
+credentials. Keep `.env` private; it is excluded by `.gitignore`.
 
 ### 4. Initialize storage
 
@@ -394,7 +448,7 @@ and start both services:
 
 ```bash
 cp .env.example .env
-# Edit .env and provide your Azure OpenAI, JWT, and SMTP settings.
+# Edit .env and provide your Azure OpenAI, Tavily, JWT, and SMTP settings.
 docker compose up --build
 ```
 
@@ -453,7 +507,8 @@ cross-origin policy for your hosting environment.
 
 1. Create or select an Azure OpenAI resource in Azure.
 2. In Azure AI Foundry / Azure OpenAI, deploy one model for chat completions
-   and one model that supports embeddings.
+   and one model that supports embeddings. The chat model deployment must also
+   support tool/function calling for the date/time and web-search tools.
 3. Copy the resource endpoint and API key from the resource's deployment or
    key-management page.
 4. Set the API version supported by your Azure resource and the Azure OpenAI
@@ -468,6 +523,10 @@ memory-extraction code. The embedding deployment is used by ChromaDB to embed
 queries and stored memories. Both integrations use the same endpoint, API key,
 and API version variables.
 
+Web search uses Tavily rather than Azure OpenAI. Set `TAVILY_API_KEY` in `.env`
+to enable it; the date/time tool uses Python's timezone database and needs no
+additional service configuration.
+
 ## Configuration reference
 
 Copy `.env.example` to `.env`. The project calls `load_dotenv()` from its
@@ -480,6 +539,7 @@ configuration and model/vector-store modules. `.env` is not checked in.
 | `AZURE_OPENAI_API_VERSION` | Yes for Azure calls | Azure OpenAI API version |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | Yes for chat, summarization, extraction | Azure chat deployment name |
 | `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` | Yes for vector search/storage | Azure embedding deployment name |
+| `TAVILY_API_KEY` | Yes for web search | Tavily API key; no default |
 | `JWT_SECRET_KEY` | Yes for token operations | Must be at least 32 characters; no default |
 | `JWT_ALGORITHM` | No | `HS256` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` |
@@ -493,7 +553,8 @@ configuration and model/vector-store modules. `.env` is not checked in.
 | `CHROMA_PERSIST_DIRECTORY` | No | `data/chroma_db`; relative paths resolve from the project root |
 | `CHROMA_COLLECTION_NAME` | No | `assistant_memories` |
 
-Azure values are checked when their model clients are created. Authentication
+Azure values are checked when their model clients are created. Tavily reads
+`TAVILY_API_KEY` when the web-search integration is invoked. Authentication
 settings are validated when JWT operations need them. Email delivery fails
 explicitly if the SMTP username, password, or sender address is unavailable.
 The SMTP service always negotiates STARTTLS regardless of `SMTP_USE_TLS`.
@@ -551,7 +612,7 @@ requires `password`. The registration password must be 12–128 characters.
 | `POST` | `/conversations` | Bearer token | Create a conversation for the current user. |
 | `GET` | `/conversations` | Bearer token | List the current user's conversations. |
 | `GET` | `/conversations/{conversation_id}/messages` | Bearer token | Retrieve messages after verifying conversation ownership. |
-| `POST` | `/conversations/{conversation_id}/messages` | Bearer token | Send a message, retrieve context, call Azure OpenAI, and persist the exchange. |
+| `POST` | `/conversations/{conversation_id}/messages` | Bearer token | Send a message, retrieve context, let the assistant call available tools when needed, and persist the exchange. |
 | `POST` | `/conversations/{conversation_id}/extract-memories` | Bearer token | Extract and persist long-term memory candidates immediately. |
 
 Send-message example:
@@ -562,8 +623,10 @@ Send-message example:
 }
 ```
 
-The message must contain 1–10,000 characters. Memory extraction returns the
-number of candidates found and saved memories.
+The message must contain 1–10,000 characters. During this request the assistant
+may use the current date/time or web-search tools; there are no separate tool
+endpoints. Memory extraction returns the number of candidates found and saved
+memories.
 
 ### Episodic memory
 
@@ -623,6 +686,9 @@ the FastAPI app. It therefore does not appear in OpenAPI and requests to
 - Memory extraction has application checks for allowed categories, duplicate
   keys, transcript limits, and obvious credential-like values. These checks
   do not replace careful handling of sensitive data.
+- Web-search results come from external pages and are treated as untrusted
+  context by the assistant. Keep `TAVILY_API_KEY` private and never follow
+  instructions found in search-result content.
 - Email is delivered through configured SMTP credentials over STARTTLS.
 
 ## Troubleshooting
@@ -631,6 +697,8 @@ the FastAPI app. It therefore does not appear in OpenAPI and requests to
 |---|---|
 | Poetry reports an unsupported Python version | Confirm Python 3.14 is installed and selected with `poetry env use 3.14`. The project currently requires `>=3.14,<4.0.0`. |
 | Missing Azure chat configuration | Set `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, and `AZURE_OPENAI_DEPLOYMENT_NAME`. Confirm the deployment exists and the name is exact. |
+| Web search is unavailable or returns no results | Set a valid `TAVILY_API_KEY` in `.env`. Confirm the Tavily account/key is active and check the server log for search errors; no results can also mean the query returned no relevant matches. |
+| Chat tools are not called | Confirm the Azure chat deployment supports tool/function calling. Tool selection is made by the model; the chat prompt directs date/time and time-sensitive requests to the corresponding tool. |
 | Missing embedding configuration or vector-store errors | Set `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` along with the shared endpoint, API key, and API version. Confirm the Azure deployment supports embeddings and that the Chroma path is writable. |
 | Chat, embedding, or extraction requests fail after configuration | Verify the resource endpoint, API key, API version, deployment names, Azure availability, and model permissions. Check the server log for the underlying integration error. |
 | SQLite cannot be opened | Start the application from the repository root. The fixed relative database path is `data/chat_history.sqlite3`; ensure its parent directory is writable. |
@@ -653,10 +721,12 @@ poetry run python code-quality.py
 whitespace, runs Flake8, and checks Python syntax. It may modify Python files
 when formatting or cleaning whitespace.
 
-There are currently no test files or configured test command in the repository.
-For changes, include focused tests when adding test coverage, run the quality
-script, and verify relevant API behavior through `/docs` or a local client.
-Keep credentials and generated `data/` contents out of commits.
+There is currently no automated test suite or configured test command in the
+repository. `app/tools/test_web_tool.py` is a manual web-search smoke script,
+not an automated test. For changes, include focused tests when adding test
+coverage, run the quality script, and verify relevant API behavior through
+`/docs` or a local client. Keep credentials and generated `data/` contents out
+of commits.
 
 Suggested contribution workflow:
 
